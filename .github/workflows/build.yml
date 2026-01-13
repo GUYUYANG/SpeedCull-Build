@@ -18,8 +18,8 @@ jobs:
         mkdir -p ArenaCull.app/Contents/MacOS
         mkdir -p ArenaCull.app/Contents/Resources
         
-        # 2. 编译 Swift 代码 (已修复：添加了 -framework AppKit)
-        swiftc main.swift -o ArenaCull.app/Contents/MacOS/ArenaCull -target arm64-apple-macosx11.0 -framework SwiftUI -framework ImageIO -framework AppKit
+        # 2. 编译 Swift 代码 (单行暴力版，防出错)
+        swiftc main.swift -o ArenaCull.app/Contents/MacOS/ArenaCull -target arm64-apple-macosx11.0 -framework SwiftUI -framework ImageIO -framework AppKit -framework Foundation -framework CoreGraphics -parse-as-library
         
         # 3. 创建 Info.plist 配置信息
         cat <<EOF > ArenaCull.app/Contents/Info.plist
