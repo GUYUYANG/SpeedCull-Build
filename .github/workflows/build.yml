@@ -20,7 +20,7 @@ jobs:
         
         # 2. 编译 Swift 代码
         # 这一步会把 main.swift 变成可执行程序
-        swiftc main.swift -o ArenaCull.app/Contents/MacOS/ArenaCull -target arm64-apple-macosx11.0 -framework SwiftUI -framework ImageIO
+        swiftc main.swift -o ArenaCull.app/Contents/MacOS/ArenaCull -target arm64-apple-macosx11.0 -framework SwiftUI -framework ImageIO -framework AppKit
         
         # 3. 创建 Info.plist 配置信息
         # 这是为了让 App 有图标(虽然是默认的)并能请求文件权限
