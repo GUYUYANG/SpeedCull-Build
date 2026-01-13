@@ -44,7 +44,6 @@ class CullViewModel: ObservableObject {
     
     let allowedExtensions = ["ARW", "CR2", "CR3", "NEF", "DNG", "RAF", "JPG", "JPEG"]
     
-    // 打开文件夹
     func loadFolder() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -61,15 +60,12 @@ class CullViewModel: ObservableObject {
     
     private func scanPhotos(at url: URL) {
         do {
-            // 请求读取标签权限
             let files = try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: [.tagNamesKey])
-            
             let rawFiles = files.filter { allowedExtensions.contains($0.pathExtension.uppercased()) }
                 .sorted { $0.lastPathComponent < $1.lastPathComponent }
             
             DispatchQueue.main.async {
                 self.photos = rawFiles.map { url in
-                    // 读取现有的 Finder 标签
                     let tags = (try? url.resourceValues(forKeys: [.tagNamesKey]).tagNames) ?? []
                     var status: CullStatus = .none
                     if tags.contains("Green") { status = .winner }
@@ -85,7 +81,6 @@ class CullViewModel: ObservableObject {
         } catch { print("Error: \(error)") }
     }
     
-    // 加载中间大图
     func loadMainPreview() {
         guard !photos.isEmpty, selectionIndex < photos.count else { return }
         let url = photos[selectionIndex].url
@@ -109,23 +104,18 @@ class CullViewModel: ObservableObject {
     
     // --- 核心操作 ---
     
-    // 写入 Finder 标签 (已彻底修复)
+    // 写入 Finder 标签 (终极修复版：使用 NSURL)
     func setFinderTag(for item: PhotoItem, tag: String?) {
-        var fileUrl = item.url
+        let fileUrl = item.url
         do {
             let tags: [String] = tag != nil ? [tag!] : []
-            
-            // 修复点：使用最标准的 URLResourceValues 写法
-            var resourceValues = URLResourceValues()
-            resourceValues.tagNames = tags
-            try fileUrl.setResourceValues(resourceValues)
-            
+            // 强制转换为 NSURL，调用 Objective-C 接口，绕过 Swift 的 get-only 检查
+            try (fileUrl as NSURL).setResourceValue(tags, forKey: .tagNamesKey)
         } catch {
             print("无法写入标签: \(error)")
         }
     }
     
-    // R键：挑战擂台
     func triggerChallenge() {
         guard !photos.isEmpty else { return }
         var challenger = photos[selectionIndex]
@@ -152,7 +142,6 @@ class CullViewModel: ObservableObject {
         objectWillChange.send()
     }
     
-    // X键 (或2): 标记废片
     func triggerReject() {
         guard !photos.isEmpty else { return }
         var item = photos[selectionIndex]
@@ -162,7 +151,6 @@ class CullViewModel: ObservableObject {
         nextPhoto()
     }
     
-    // F键：存档
     func triggerFinalize() {
         activeArena.isArchived = true
         arenas.append(Arena())
