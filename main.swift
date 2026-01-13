@@ -1,6 +1,6 @@
 import SwiftUI
 import ImageIO
-import AppKit  // <--- 之前漏了这一行，它是 Mac App 的核心
+import AppKit
 
 // MARK: - 1. 数据模型
 struct PhotoItem: Identifiable, Hashable {
@@ -89,8 +89,6 @@ class CullViewModel: ObservableObject {
         guard !photos.isEmpty else { return }
         let challenger = photos[selectionIndex]
         
-        // 只有未进过擂台的图，才在这里标记处理；
-        // 但这里我们简单点，只要按了R，就视为该图已阅
         photos[selectionIndex].isProcessed = true
         
         let arena = activeArena
