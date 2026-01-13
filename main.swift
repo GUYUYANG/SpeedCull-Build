@@ -17,16 +17,6 @@ enum CullStatus: String {
         case .reject: return .red
         }
     }
-    
-    // 对应 Finder 标签的名称
-    var tagName: String? {
-        switch self {
-        case .winner: return "Green"
-        case .loser: return "Yellow"
-        case .reject: return "Red"
-        case .none: return nil
-        }
-    }
 }
 
 struct PhotoItem: Identifiable, Hashable {
@@ -71,14 +61,15 @@ class CullViewModel: ObservableObject {
     
     private func scanPhotos(at url: URL) {
         do {
+            // 请求读取标签权限
             let files = try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: [.tagNamesKey])
-            // 排序并过滤
+            
             let rawFiles = files.filter { allowedExtensions.contains($0.pathExtension.uppercased()) }
                 .sorted { $0.lastPathComponent < $1.lastPathComponent }
             
             DispatchQueue.main.async {
                 self.photos = rawFiles.map { url in
-                    // 读取现有的 Finder 标签，恢复状态
+                    // 读取现有的 Finder 标签
                     let tags = (try? url.resourceValues(forKeys: [.tagNamesKey]).tagNames) ?? []
                     var status: CullStatus = .none
                     if tags.contains("Green") { status = .winner }
@@ -98,7 +89,6 @@ class CullViewModel: ObservableObject {
     func loadMainPreview() {
         guard !photos.isEmpty, selectionIndex < photos.count else { return }
         let url = photos[selectionIndex].url
-        // 异步加载
         DispatchQueue.global(qos: .userInteractive).async {
             if let nsImage = self.extractThumbnail(from: url, maxPixelSize: 1800) {
                 DispatchQueue.main.async { self.currentImage = nsImage }
@@ -106,7 +96,6 @@ class CullViewModel: ObservableObject {
         }
     }
     
-    // 通用缩略图提取器 (ImageIO)
     func extractThumbnail(from url: URL, maxPixelSize: Int) -> NSImage? {
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -120,13 +109,14 @@ class CullViewModel: ObservableObject {
     
     // --- 核心操作 ---
     
-    // 写入 Finder 标签
+    // 写入 Finder 标签 (已修复)
     func setFinderTag(for item: PhotoItem, tag: String?) {
-        var url = item.url
+        // 这里的 url 是结构体里的，需要拷贝一份成 var 才能修改
+        var fileUrl = item.url
         do {
-            var resourceValues = URLResourceValues()
-            resourceValues.tagNames = tag != nil ? [tag!] : []
-            try url.setResourceValues(resourceValues)
+            let tags: [String] = tag != nil ? [tag!] : []
+            // 修复点：使用 setResourceValue 直接设置，而不是创建 ResourceValues 对象
+            try fileUrl.setResourceValue(tags, forKey: .tagNamesKey)
         } catch {
             print("无法写入标签: \(error)")
         }
@@ -137,21 +127,17 @@ class CullViewModel: ObservableObject {
         guard !photos.isEmpty else { return }
         var challenger = photos[selectionIndex]
         
-        // 1. 视觉变绿
         challenger.status = .winner
         photos[selectionIndex] = challenger
         setFinderTag(for: challenger, tag: "Green")
         
         let arena = activeArena
         
-        // 2. 旧王退位
         if var oldKing = arena.king {
             if oldKing.id != challenger.id {
-                // 视觉变黄
                 oldKing.status = .loser
                 setFinderTag(for: oldKing, tag: "Yellow")
                 
-                // 更新列表里的旧王状态
                 if let idx = photos.firstIndex(where: { $0.id == oldKing.id }) {
                     photos[idx] = oldKing
                 }
@@ -169,9 +155,7 @@ class CullViewModel: ObservableObject {
         var item = photos[selectionIndex]
         item.status = .reject
         photos[selectionIndex] = item
-        setFinderTag(for: item, tag: "Red") // Finder 标红
-        
-        // 如果它在擂台上，把它踢下来（可选逻辑，这里简单处理只标红）
+        setFinderTag(for: item, tag: "Red")
         nextPhoto()
     }
     
@@ -199,7 +183,6 @@ class CullViewModel: ObservableObject {
 
 // MARK: - 3. UI 组件
 
-// 异步缩略图组件 (用于左侧列表)
 struct AsyncThumbnailView: View {
     let url: URL
     @State private var image: NSImage?
@@ -217,7 +200,6 @@ struct AsyncThumbnailView: View {
         .frame(width: 50, height: 50)
         .clipped()
         .onAppear {
-            // 懒加载：只加载 150px 的小图，极快
             DispatchQueue.global(qos: .userInitiated).async {
                 let options: [CFString: Any] = [
                     kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -240,7 +222,7 @@ struct ContentView: View {
     
     var body: some View {
         HSplitView {
-            // Zone 1: 侧边栏 (带缩略图)
+            // Zone 1: 侧边栏
             VStack(spacing: 0) {
                 HStack {
                     Text("图库")
@@ -257,7 +239,6 @@ struct ContentView: View {
                 List {
                     ForEach(Array(vm.photos.enumerated()), id: \.element) { index, item in
                         HStack {
-                            // 缩略图
                             AsyncThumbnailView(url: item.url)
                                 .cornerRadius(4)
                                 .overlay(
@@ -291,7 +272,7 @@ struct ContentView: View {
             }
             .frame(minWidth: 220, maxWidth: 300)
             
-            // Zone 2: 舞台 (大图)
+            // Zone 2: 舞台
             ZStack {
                 Color(NSColor.windowBackgroundColor)
                 
@@ -316,7 +297,6 @@ struct ContentView: View {
             
             // Zone 3: 竞技场
             VStack(spacing: 0) {
-                // 顶部标题
                 HStack {
                     Image(systemName: "trophy.fill").foregroundColor(.yellow)
                     Text("ARENA").font(.headline).bold()
@@ -327,7 +307,6 @@ struct ContentView: View {
                 
                 ScrollView {
                     VStack(spacing: 15) {
-                        // 👑 现任王座
                         if let king = vm.activeArena.king {
                             VStack {
                                 Text("👑 WINNER").font(.caption).bold().foregroundColor(.green)
@@ -353,7 +332,6 @@ struct ContentView: View {
                         
                         Divider().padding(.vertical)
                         
-                        // ⚠️ 替补席
                         if !vm.activeArena.princes.isEmpty {
                             Text("HISTORY").font(.caption).foregroundColor(.secondary)
                             ForEach(vm.activeArena.princes, id: \.id) { prince in
@@ -381,18 +359,16 @@ struct ContentView: View {
             .frame(minWidth: 200, maxWidth: 260)
             .background(VisualEffectView(material: .sidebar, blendingMode: .behindWindow))
         }
-        // 快捷键绑定
         .background(Button(action: { vm.prevPhoto() }) { EmptyView() }.keyboardShortcut(.upArrow, modifiers: []))
         .background(Button(action: { vm.nextPhoto() }) { EmptyView() }.keyboardShortcut(.downArrow, modifiers: []))
-        .background(Button(action: { vm.triggerChallenge() }) { EmptyView() }.keyboardShortcut("r", modifiers: [])) // R: 称王
-        .background(Button(action: { vm.triggerReject() }) { EmptyView() }.keyboardShortcut("2", modifiers: [])) // 2: 废片
-        .background(Button(action: { vm.triggerReject() }) { EmptyView() }.keyboardShortcut("x", modifiers: [])) // X: 废片
-        .background(Button(action: { vm.triggerFinalize() }) { EmptyView() }.keyboardShortcut("f", modifiers: [])) // F: 存档
+        .background(Button(action: { vm.triggerChallenge() }) { EmptyView() }.keyboardShortcut("r", modifiers: []))
+        .background(Button(action: { vm.triggerReject() }) { EmptyView() }.keyboardShortcut("2", modifiers: []))
+        .background(Button(action: { vm.triggerReject() }) { EmptyView() }.keyboardShortcut("x", modifiers: []))
+        .background(Button(action: { vm.triggerFinalize() }) { EmptyView() }.keyboardShortcut("f", modifiers: []))
         .frame(minWidth: 1000, minHeight: 700)
     }
 }
 
-// 磨砂玻璃效果辅助视图
 struct VisualEffectView: NSViewRepresentable {
     let material: NSVisualEffectView.Material
     let blendingMode: NSVisualEffectView.BlendingMode
@@ -412,6 +388,6 @@ struct ArenaCullApp: App {
         WindowGroup {
             ContentView()
         }
-        .windowStyle(HiddenTitleBarWindowStyle()) // 更现代的窗口风格
+        .windowStyle(HiddenTitleBarWindowStyle())
     }
 }
