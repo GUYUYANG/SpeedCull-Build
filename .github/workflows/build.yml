@@ -18,12 +18,10 @@ jobs:
         mkdir -p ArenaCull.app/Contents/MacOS
         mkdir -p ArenaCull.app/Contents/Resources
         
-        # 2. 编译 Swift 代码
-        # 这一步会把 main.swift 变成可执行程序
+        # 2. 编译 Swift 代码 (已修复：添加了 -framework AppKit)
         swiftc main.swift -o ArenaCull.app/Contents/MacOS/ArenaCull -target arm64-apple-macosx11.0 -framework SwiftUI -framework ImageIO -framework AppKit
         
         # 3. 创建 Info.plist 配置信息
-        # 这是为了让 App 有图标(虽然是默认的)并能请求文件权限
         cat <<EOF > ArenaCull.app/Contents/Info.plist
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
