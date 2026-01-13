@@ -109,14 +109,17 @@ class CullViewModel: ObservableObject {
     
     // --- 核心操作 ---
     
-    // 写入 Finder 标签 (已修复)
+    // 写入 Finder 标签 (已彻底修复)
     func setFinderTag(for item: PhotoItem, tag: String?) {
-        // 这里的 url 是结构体里的，需要拷贝一份成 var 才能修改
         var fileUrl = item.url
         do {
             let tags: [String] = tag != nil ? [tag!] : []
-            // 修复点：使用 setResourceValue 直接设置，而不是创建 ResourceValues 对象
-            try fileUrl.setResourceValue(tags, forKey: .tagNamesKey)
+            
+            // 修复点：使用最标准的 URLResourceValues 写法
+            var resourceValues = URLResourceValues()
+            resourceValues.tagNames = tags
+            try fileUrl.setResourceValues(resourceValues)
+            
         } catch {
             print("无法写入标签: \(error)")
         }
