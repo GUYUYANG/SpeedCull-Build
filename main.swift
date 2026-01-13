@@ -2,12 +2,38 @@ import SwiftUI
 import ImageIO
 import AppKit
 
-// MARK: - 1. 数据模型
+// MARK: - 1. 数据模型与枚举
+enum CullStatus: String {
+    case none
+    case winner // 绿 (King)
+    case loser  // 黄 (Prince)
+    case reject // 红 (Trash)
+    
+    var color: Color {
+        switch self {
+        case .none: return .gray.opacity(0.3)
+        case .winner: return .green
+        case .loser: return .yellow
+        case .reject: return .red
+        }
+    }
+    
+    // 对应 Finder 标签的名称
+    var tagName: String? {
+        switch self {
+        case .winner: return "Green"
+        case .loser: return "Yellow"
+        case .reject: return "Red"
+        case .none: return nil
+        }
+    }
+}
+
 struct PhotoItem: Identifiable, Hashable {
     let id = UUID()
     let url: URL
     let filename: String
-    var isProcessed: Bool = false
+    var status: CullStatus = .none
 }
 
 class Arena: Identifiable, ObservableObject {
@@ -24,19 +50,17 @@ class CullViewModel: ObservableObject {
     @Published var currentImage: NSImage?
     
     @Published var arenas: [Arena] = [Arena()]
-    
-    var activeArena: Arena {
-        return arenas.last ?? Arena()
-    }
+    var activeArena: Arena { arenas.last ?? Arena() }
     
     let allowedExtensions = ["ARW", "CR2", "CR3", "NEF", "DNG", "RAF", "JPG", "JPEG"]
     
+    // 打开文件夹
     func loadFolder() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        panel.message = "请选择包含 RAW 照片的文件夹"
+        panel.message = "请选择 RAW 文件夹"
         
         if panel.runModal() == .OK {
             if let url = panel.url {
@@ -47,61 +71,111 @@ class CullViewModel: ObservableObject {
     
     private func scanPhotos(at url: URL) {
         do {
-            let files = try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)
+            let files = try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: [.tagNamesKey])
+            // 排序并过滤
             let rawFiles = files.filter { allowedExtensions.contains($0.pathExtension.uppercased()) }
                 .sorted { $0.lastPathComponent < $1.lastPathComponent }
             
             DispatchQueue.main.async {
-                self.photos = rawFiles.map { PhotoItem(url: $0, filename: $0.lastPathComponent) }
+                self.photos = rawFiles.map { url in
+                    // 读取现有的 Finder 标签，恢复状态
+                    let tags = (try? url.resourceValues(forKeys: [.tagNamesKey]).tagNames) ?? []
+                    var status: CullStatus = .none
+                    if tags.contains("Green") { status = .winner }
+                    else if tags.contains("Yellow") { status = .loser }
+                    else if tags.contains("Red") { status = .reject }
+                    
+                    return PhotoItem(url: url, filename: url.lastPathComponent, status: status)
+                }
                 self.selectionIndex = 0
                 self.arenas = [Arena()]
-                if !self.photos.isEmpty {
-                    self.loadPreview()
-                }
+                if !self.photos.isEmpty { self.loadMainPreview() }
             }
-        } catch {
-            print("Error: \(error)")
-        }
+        } catch { print("Error: \(error)") }
     }
     
-    func loadPreview() {
+    // 加载中间大图
+    func loadMainPreview() {
         guard !photos.isEmpty, selectionIndex < photos.count else { return }
         let url = photos[selectionIndex].url
-        
+        // 异步加载
         DispatchQueue.global(qos: .userInteractive).async {
-            let options: [CFString: Any] = [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceThumbnailMaxPixelSize: 1500,
-                kCGImageSourceCreateThumbnailWithTransform: true
-            ]
-            
-            if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-               let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
-                let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-                DispatchQueue.main.async {
-                    self.currentImage = nsImage
-                }
+            if let nsImage = self.extractThumbnail(from: url, maxPixelSize: 1800) {
+                DispatchQueue.main.async { self.currentImage = nsImage }
             }
         }
     }
     
+    // 通用缩略图提取器 (ImageIO)
+    func extractThumbnail(from url: URL, maxPixelSize: Int) -> NSImage? {
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+            kCGImageSourceCreateThumbnailWithTransform: true
+        ]
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+    }
+    
+    // --- 核心操作 ---
+    
+    // 写入 Finder 标签
+    func setFinderTag(for item: PhotoItem, tag: String?) {
+        var url = item.url
+        do {
+            var resourceValues = URLResourceValues()
+            resourceValues.tagNames = tag != nil ? [tag!] : []
+            try url.setResourceValues(resourceValues)
+        } catch {
+            print("无法写入标签: \(error)")
+        }
+    }
+    
+    // R键：挑战擂台
     func triggerChallenge() {
         guard !photos.isEmpty else { return }
-        let challenger = photos[selectionIndex]
+        var challenger = photos[selectionIndex]
         
-        photos[selectionIndex].isProcessed = true
+        // 1. 视觉变绿
+        challenger.status = .winner
+        photos[selectionIndex] = challenger
+        setFinderTag(for: challenger, tag: "Green")
         
         let arena = activeArena
         
-        if let oldKing = arena.king {
+        // 2. 旧王退位
+        if var oldKing = arena.king {
             if oldKing.id != challenger.id {
+                // 视觉变黄
+                oldKing.status = .loser
+                setFinderTag(for: oldKing, tag: "Yellow")
+                
+                // 更新列表里的旧王状态
+                if let idx = photos.firstIndex(where: { $0.id == oldKing.id }) {
+                    photos[idx] = oldKing
+                }
                 arena.princes.insert(oldKing, at: 0)
             }
         }
+        
         arena.king = challenger
         objectWillChange.send()
     }
     
+    // X键 (或2): 标记废片
+    func triggerReject() {
+        guard !photos.isEmpty else { return }
+        var item = photos[selectionIndex]
+        item.status = .reject
+        photos[selectionIndex] = item
+        setFinderTag(for: item, tag: "Red") // Finder 标红
+        
+        // 如果它在擂台上，把它踢下来（可选逻辑，这里简单处理只标红）
+        nextPhoto()
+    }
+    
+    // F键：存档
     func triggerFinalize() {
         activeArena.isArchived = true
         arenas.append(Arena())
@@ -111,108 +185,225 @@ class CullViewModel: ObservableObject {
     func nextPhoto() {
         if selectionIndex < photos.count - 1 {
             selectionIndex += 1
-            loadPreview()
+            loadMainPreview()
         }
     }
     
     func prevPhoto() {
         if selectionIndex > 0 {
             selectionIndex -= 1
-            loadPreview()
+            loadMainPreview()
         }
     }
 }
 
-// MARK: - 3. 界面布局 (View)
+// MARK: - 3. UI 组件
+
+// 异步缩略图组件 (用于左侧列表)
+struct AsyncThumbnailView: View {
+    let url: URL
+    @State private var image: NSImage?
+    
+    var body: some View {
+        Group {
+            if let img = image {
+                Image(nsImage: img)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                Color.gray.opacity(0.2)
+            }
+        }
+        .frame(width: 50, height: 50)
+        .clipped()
+        .onAppear {
+            // 懒加载：只加载 150px 的小图，极快
+            DispatchQueue.global(qos: .userInitiated).async {
+                let options: [CFString: Any] = [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceThumbnailMaxPixelSize: 150,
+                    kCGImageSourceCreateThumbnailWithTransform: true
+                ]
+                if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                   let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
+                    let nsImg = NSImage(cgImage: cgImage, size: NSSize(width: 50, height: 50))
+                    DispatchQueue.main.async { self.image = nsImg }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - 4. 主视图
 struct ContentView: View {
     @StateObject var vm = CullViewModel()
     
     var body: some View {
         HSplitView {
-            // Zone 1: 待选池
-            VStack(alignment: .leading) {
-                Text("待选池 \(vm.selectionIndex + 1)/\(vm.photos.count)")
-                    .font(.caption)
-                    .padding(5)
-                
-                List(0..<vm.photos.count, id: \.self) { index in
-                    let item = vm.photos[index]
-                    HStack {
-                        Circle()
-                            .fill(index == vm.selectionIndex ? Color.blue : (item.isProcessed ? Color.gray : Color.white))
-                            .frame(width: 8, height: 8)
-                        Text(item.filename)
-                            .font(.system(size: 12))
-                            .foregroundColor(item.isProcessed ? .gray : .primary)
-                    }
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        vm.selectionIndex = index
-                        vm.loadPreview()
-                    }
-                    .listRowBackground(index == vm.selectionIndex ? Color.blue.opacity(0.2) : Color.clear)
+            // Zone 1: 侧边栏 (带缩略图)
+            VStack(spacing: 0) {
+                HStack {
+                    Text("图库")
+                        .font(.headline)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Text("\(vm.photos.count) 张")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
+                .padding()
+                .background(VisualEffectView(material: .sidebar, blendingMode: .behindWindow))
+                
+                List {
+                    ForEach(Array(vm.photos.enumerated()), id: \.element) { index, item in
+                        HStack {
+                            // 缩略图
+                            AsyncThumbnailView(url: item.url)
+                                .cornerRadius(4)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .stroke(item.status.color, lineWidth: item.status == .none ? 0 : 3)
+                                )
+                            
+                            VStack(alignment: .leading) {
+                                Text(item.filename)
+                                    .font(.system(size: 13, weight: .medium))
+                                    .lineLimit(1)
+                                if item.status != .none {
+                                    Text(item.status == .winner ? "WIN" : (item.status == .reject ? "REJECT" : "OUT"))
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundColor(item.status.color)
+                                }
+                            }
+                            Spacer()
+                        }
+                        .padding(.vertical, 4)
+                        .contentShape(Rectangle())
+                        .listRowBackground(vm.selectionIndex == index ? Color.accentColor.opacity(0.2) : Color.clear)
+                        .onTapGesture {
+                            vm.selectionIndex = index
+                            vm.loadMainPreview()
+                        }
+                        .id(index)
+                    }
+                }
+                .listStyle(SidebarListStyle())
             }
-            .frame(minWidth: 150, maxWidth: 200)
+            .frame(minWidth: 220, maxWidth: 300)
             
-            // Zone 2: 聚光灯
+            // Zone 2: 舞台 (大图)
             ZStack {
-                Color.black
+                Color(NSColor.windowBackgroundColor)
+                
                 if let img = vm.currentImage {
                     Image(nsImage: img)
                         .resizable()
-                        .scaledToFit()
-                } else {
-                    VStack {
-                        Text("ArenaCull").font(.largeTitle).foregroundColor(.gray)
-                        Button("打开文件夹") { vm.loadFolder() }
-                            .padding()
-                    }
-                }
-            }
-            .frame(minWidth: 400)
-            
-            // Zone 3: 擂台榜
-            VStack(spacing: 0) {
-                Text("当前擂台").font(.headline).padding()
-                
-                ZStack {
-                    Rectangle().fill(Color.black)
-                    if let king = vm.activeArena.king {
-                        VStack {
-                            Text("👑 WINNER").font(.caption).foregroundColor(.green).bold()
-                            Text(king.filename).foregroundColor(.white)
-                        }
+                        .aspectRatio(contentMode: .fit)
                         .padding()
-                        .background(RoundedRectangle(cornerRadius: 10).stroke(Color.green, lineWidth: 4))
-                    } else {
-                        Text("空缺").foregroundColor(.gray)
+                } else {
+                    VStack(spacing: 20) {
+                        Image(systemName: "photo.on.rectangle.angled")
+                            .font(.system(size: 60))
+                            .foregroundColor(.secondary)
+                        Button("打开文件夹 (Open Folder)") {
+                            vm.loadFolder()
+                        }
+                        .controlSize(.large)
                     }
-                }
-                .frame(height: 150)
-                .padding()
-                
-                Divider()
-                
-                List(vm.activeArena.princes, id: \.id) { prince in
-                    HStack {
-                        Text("⚠️")
-                        Text(prince.filename)
-                        Spacer()
-                    }
-                    .padding(5)
-                    .background(Color.yellow.opacity(0.2))
-                    .cornerRadius(5)
                 }
             }
-            .frame(minWidth: 200, maxWidth: 250)
+            .frame(minWidth: 500)
+            
+            // Zone 3: 竞技场
+            VStack(spacing: 0) {
+                // 顶部标题
+                HStack {
+                    Image(systemName: "trophy.fill").foregroundColor(.yellow)
+                    Text("ARENA").font(.headline).bold()
+                    Spacer()
+                }
+                .padding()
+                .background(VisualEffectView(material: .headerView, blendingMode: .withinWindow))
+                
+                ScrollView {
+                    VStack(spacing: 15) {
+                        // 👑 现任王座
+                        if let king = vm.activeArena.king {
+                            VStack {
+                                Text("👑 WINNER").font(.caption).bold().foregroundColor(.green)
+                                AsyncThumbnailView(url: king.url)
+                                    .frame(width: 120, height: 120)
+                                    .cornerRadius(8)
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.green, lineWidth: 4))
+                                    .shadow(color: .green.opacity(0.5), radius: 10, x: 0, y: 0)
+                                Text(king.filename).font(.caption).bold()
+                            }
+                            .padding()
+                            .background(Color.black.opacity(0.2))
+                            .cornerRadius(12)
+                        } else {
+                            VStack {
+                                Image(systemName: "crown").font(.largeTitle).foregroundColor(.gray)
+                                Text("等待挑战者...").font(.caption).foregroundColor(.gray)
+                            }
+                            .frame(height: 150)
+                            .frame(maxWidth: .infinity)
+                            .background(RoundedRectangle(cornerRadius: 12).stroke(Color.gray.opacity(0.3), lineWidth: 2))
+                        }
+                        
+                        Divider().padding(.vertical)
+                        
+                        // ⚠️ 替补席
+                        if !vm.activeArena.princes.isEmpty {
+                            Text("HISTORY").font(.caption).foregroundColor(.secondary)
+                            ForEach(vm.activeArena.princes, id: \.id) { prince in
+                                HStack {
+                                    AsyncThumbnailView(url: prince.url)
+                                        .frame(width: 40, height: 40)
+                                        .cornerRadius(4)
+                                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.yellow, lineWidth: 2))
+                                    
+                                    VStack(alignment: .leading) {
+                                        Text(prince.filename).font(.caption)
+                                        Text("Out").font(.caption2).foregroundColor(.yellow)
+                                    }
+                                    Spacer()
+                                }
+                                .padding(8)
+                                .background(Color.yellow.opacity(0.1))
+                                .cornerRadius(8)
+                            }
+                        }
+                    }
+                    .padding()
+                }
+            }
+            .frame(minWidth: 200, maxWidth: 260)
+            .background(VisualEffectView(material: .sidebar, blendingMode: .behindWindow))
         }
+        // 快捷键绑定
         .background(Button(action: { vm.prevPhoto() }) { EmptyView() }.keyboardShortcut(.upArrow, modifiers: []))
         .background(Button(action: { vm.nextPhoto() }) { EmptyView() }.keyboardShortcut(.downArrow, modifiers: []))
-        .background(Button(action: { vm.triggerChallenge() }) { EmptyView() }.keyboardShortcut("r", modifiers: []))
-        .background(Button(action: { vm.triggerFinalize() }) { EmptyView() }.keyboardShortcut("f", modifiers: []))
-        .frame(minWidth: 800, minHeight: 600)
+        .background(Button(action: { vm.triggerChallenge() }) { EmptyView() }.keyboardShortcut("r", modifiers: [])) // R: 称王
+        .background(Button(action: { vm.triggerReject() }) { EmptyView() }.keyboardShortcut("2", modifiers: [])) // 2: 废片
+        .background(Button(action: { vm.triggerReject() }) { EmptyView() }.keyboardShortcut("x", modifiers: [])) // X: 废片
+        .background(Button(action: { vm.triggerFinalize() }) { EmptyView() }.keyboardShortcut("f", modifiers: [])) // F: 存档
+        .frame(minWidth: 1000, minHeight: 700)
     }
+}
+
+// 磨砂玻璃效果辅助视图
+struct VisualEffectView: NSViewRepresentable {
+    let material: NSVisualEffectView.Material
+    let blendingMode: NSVisualEffectView.BlendingMode
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = blendingMode
+        view.state = .active
+        return view
+    }
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
 }
 
 @main
@@ -221,5 +412,6 @@ struct ArenaCullApp: App {
         WindowGroup {
             ContentView()
         }
+        .windowStyle(HiddenTitleBarWindowStyle()) // 更现代的窗口风格
     }
 }
