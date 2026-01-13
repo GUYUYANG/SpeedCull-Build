@@ -1,18 +1,19 @@
 import SwiftUI
 import ImageIO
+import AppKit  // <--- 之前漏了这一行，它是 Mac App 的核心
 
 // MARK: - 1. 数据模型
 struct PhotoItem: Identifiable, Hashable {
     let id = UUID()
     let url: URL
     let filename: String
-    var isProcessed: Bool = false // 是否被处理过（进过擂台）
+    var isProcessed: Bool = false
 }
 
 class Arena: Identifiable, ObservableObject {
     let id = UUID()
-    @Published var king: PhotoItem?       // 绿标：当前的王
-    @Published var princes: [PhotoItem] = [] // 黄标：被降级的图
+    @Published var king: PhotoItem?
+    @Published var princes: [PhotoItem] = []
     var isArchived: Bool = false
 }
 
@@ -22,22 +23,20 @@ class CullViewModel: ObservableObject {
     @Published var selectionIndex: Int = 0
     @Published var currentImage: NSImage?
     
-    // 所有的擂台，最后一个是活跃的
     @Published var arenas: [Arena] = [Arena()]
     
     var activeArena: Arena {
         return arenas.last ?? Arena()
     }
     
-    // 支持的 RAW 格式
     let allowedExtensions = ["ARW", "CR2", "CR3", "NEF", "DNG", "RAF", "JPG", "JPEG"]
     
-    // 加载文件夹
     func loadFolder() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
+        panel.message = "请选择包含 RAW 照片的文件夹"
         
         if panel.runModal() == .OK {
             if let url = panel.url {
@@ -55,7 +54,7 @@ class CullViewModel: ObservableObject {
             DispatchQueue.main.async {
                 self.photos = rawFiles.map { PhotoItem(url: $0, filename: $0.lastPathComponent) }
                 self.selectionIndex = 0
-                self.arenas = [Arena()] // 重置擂台
+                self.arenas = [Arena()]
                 if !self.photos.isEmpty {
                     self.loadPreview()
                 }
@@ -65,7 +64,6 @@ class CullViewModel: ObservableObject {
         }
     }
     
-    // 极速读取 RAW 预览图
     func loadPreview() {
         guard !photos.isEmpty, selectionIndex < photos.count else { return }
         let url = photos[selectionIndex].url
@@ -73,7 +71,7 @@ class CullViewModel: ObservableObject {
         DispatchQueue.global(qos: .userInteractive).async {
             let options: [CFString: Any] = [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceThumbnailMaxPixelSize: 1500, // 足够清晰的预览
+                kCGImageSourceThumbnailMaxPixelSize: 1500,
                 kCGImageSourceCreateThumbnailWithTransform: true
             ]
             
@@ -87,39 +85,31 @@ class CullViewModel: ObservableObject {
         }
     }
     
-    // --- 核心业务逻辑 ---
-    
-    // R键：挑战擂台
     func triggerChallenge() {
         guard !photos.isEmpty else { return }
-        var challenger = photos[selectionIndex]
+        let challenger = photos[selectionIndex]
         
-        // 标记为已处理（左侧列表变暗）
+        // 只有未进过擂台的图，才在这里标记处理；
+        // 但这里我们简单点，只要按了R，就视为该图已阅
         photos[selectionIndex].isProcessed = true
         
         let arena = activeArena
         
         if let oldKing = arena.king {
-            // 如果已有王，旧王退位，进入替补席（顶部插入）
-            if oldKing.id != challenger.id { // 防止重复添加同一张
+            if oldKing.id != challenger.id {
                 arena.princes.insert(oldKing, at: 0)
             }
         }
-        
-        // 新王登基
         arena.king = challenger
-        // 强制刷新UI
         objectWillChange.send()
     }
     
-    // F键：存档并开启新擂台
     func triggerFinalize() {
         activeArena.isArchived = true
-        arenas.append(Arena()) // 创建新擂台，UI会自动清空右侧
+        arenas.append(Arena())
         objectWillChange.send()
     }
     
-    // 导航
     func nextPhoto() {
         if selectionIndex < photos.count - 1 {
             selectionIndex += 1
@@ -141,7 +131,7 @@ struct ContentView: View {
     
     var body: some View {
         HSplitView {
-            // Zone 1: 待选池 (左侧窄栏)
+            // Zone 1: 待选池
             VStack(alignment: .leading) {
                 Text("待选池 \(vm.selectionIndex + 1)/\(vm.photos.count)")
                     .font(.caption)
@@ -150,7 +140,6 @@ struct ContentView: View {
                 List(0..<vm.photos.count, id: \.self) { index in
                     let item = vm.photos[index]
                     HStack {
-                        // 简单的状态点
                         Circle()
                             .fill(index == vm.selectionIndex ? Color.blue : (item.isProcessed ? Color.gray : Color.white))
                             .frame(width: 8, height: 8)
@@ -158,16 +147,17 @@ struct ContentView: View {
                             .font(.system(size: 12))
                             .foregroundColor(item.isProcessed ? .gray : .primary)
                     }
-                    .listRowBackground(index == vm.selectionIndex ? Color.blue.opacity(0.2) : Color.clear)
+                    .contentShape(Rectangle())
                     .onTapGesture {
                         vm.selectionIndex = index
                         vm.loadPreview()
                     }
+                    .listRowBackground(index == vm.selectionIndex ? Color.blue.opacity(0.2) : Color.clear)
                 }
             }
             .frame(minWidth: 150, maxWidth: 200)
             
-            // Zone 2: 聚光灯 (中间大图)
+            // Zone 2: 聚光灯
             ZStack {
                 Color.black
                 if let img = vm.currentImage {
@@ -184,11 +174,10 @@ struct ContentView: View {
             }
             .frame(minWidth: 400)
             
-            // Zone 3: 擂台榜 (右侧)
+            // Zone 3: 擂台榜
             VStack(spacing: 0) {
                 Text("当前擂台").font(.headline).padding()
                 
-                // 👑 现任王座 (绿)
                 ZStack {
                     Rectangle().fill(Color.black)
                     if let king = vm.activeArena.king {
@@ -207,7 +196,6 @@ struct ContentView: View {
                 
                 Divider()
                 
-                // ⚠️ 替补席 (黄)
                 List(vm.activeArena.princes, id: \.id) { prince in
                     HStack {
                         Text("⚠️")
@@ -221,11 +209,10 @@ struct ContentView: View {
             }
             .frame(minWidth: 200, maxWidth: 250)
         }
-        // 绑定键盘快捷键
         .background(Button(action: { vm.prevPhoto() }) { EmptyView() }.keyboardShortcut(.upArrow, modifiers: []))
         .background(Button(action: { vm.nextPhoto() }) { EmptyView() }.keyboardShortcut(.downArrow, modifiers: []))
-        .background(Button(action: { vm.triggerChallenge() }) { EmptyView() }.keyboardShortcut("r", modifiers: [])) // R键
-        .background(Button(action: { vm.triggerFinalize() }) { EmptyView() }.keyboardShortcut("f", modifiers: []))  // F键
+        .background(Button(action: { vm.triggerChallenge() }) { EmptyView() }.keyboardShortcut("r", modifiers: []))
+        .background(Button(action: { vm.triggerFinalize() }) { EmptyView() }.keyboardShortcut("f", modifiers: []))
         .frame(minWidth: 800, minHeight: 600)
     }
 }
